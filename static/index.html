@@ -1,0 +1,92 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>LD2451 Live Viewer</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;700&family=IBM+Plex+Mono:wght@400;500&display=swap"
+      rel="stylesheet"
+    />
+    <link rel="stylesheet" href="/static/styles.css" />
+  </head>
+  <body>
+    <div class="bg-shape bg-a"></div>
+    <div class="bg-shape bg-b"></div>
+
+    <main class="layout">
+      <header class="panel hero">
+        <div>
+          <p class="eyebrow">HLK Sensor Dashboard</p>
+          <h1>LD2451 Live Viewer</h1>
+          <p class="subtext">
+            USB-serial live stream with target radar, presence timeline, and raw packet trace.
+          </p>
+        </div>
+        <div class="status-wrap">
+          <span id="conn-dot" class="dot offline"></span>
+          <span id="conn-text">Connecting...</span>
+        </div>
+      </header>
+
+      <section class="panel controls">
+        <label>
+          Port
+          <select id="port-select"></select>
+        </label>
+        <label>
+          Baud
+          <input id="baud-input" type="number" min="1200" max="1000000" value="115200" />
+        </label>
+        <label class="switch-row">
+          <input id="simulate-input" type="checkbox" />
+          Simulate
+        </label>
+        <button id="apply-btn">Apply</button>
+        <button id="refresh-ports-btn" class="secondary">Refresh Ports</button>
+      </section>
+
+      <section class="grid">
+        <article class="panel card radar-card">
+          <div class="card-header">
+            <h2>Radar View</h2>
+            <span id="target-count" class="pill">0 targets</span>
+          </div>
+          <canvas id="radar-canvas" width="620" height="420"></canvas>
+        </article>
+
+        <article class="panel card timeline-card">
+          <div class="card-header">
+            <h2>Presence Timeline</h2>
+            <span class="pill">Last 120 samples</span>
+          </div>
+          <canvas id="timeline-canvas" width="620" height="180"></canvas>
+        </article>
+      </section>
+
+      <section class="panel card raw-card">
+        <div class="card-header">
+          <h2>Raw Packets</h2>
+          <button id="clear-btn" class="secondary">Clear</button>
+        </div>
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>Time</th>
+                <th>Presence</th>
+                <th>Targets</th>
+                <th>Raw Text</th>
+              </tr>
+            </thead>
+            <tbody id="raw-body"></tbody>
+          </table>
+        </div>
+      </section>
+    </main>
+
+    <script src="/static/app.js"></script>
+  </body>
+</html>
