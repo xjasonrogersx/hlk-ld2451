@@ -1,126 +1,118 @@
 from __future__ import annotations
 
-import json
 import math
-import re
-from typing import Any
 
 from .models import SensorPacket, Target, utc_now_iso
 
-KEY_VALUE_PATTERN = re.compile(r"([A-Za-z_][A-Za-z0-9_]*)\s*[:=]\s*(-?\d+(?:\.\d+)?)")
-COORD_PATTERN = re.compile(
-    r"(?:x\s*[:=]\s*(-?\d+(?:\.\d+)?)).{0,16}?(?:y\s*[:=]\s*(-?\d+(?:\.\d+)?))",
-    re.IGNORECASE,
-)
-PAIR_PATTERN = re.compile(r"\(\s*(-?\d+(?:\.\d+)?)\s*,\s*(-?\d+(?:\.\d+)?)\s*\)")
-DIST_ANGLE_PATTERN = re.compile(
-    r"(?:d(?:ist(?:ance)?)?\s*[:=]\s*(\d+(?:\.\d+)?)).{0,16}?(?:a(?:ngle)?\s*[:=]\s*(-?\d+(?:\.\d+)?))",
-    re.IGNORECASE,
-)
+REPORT_HEADER = bytes.fromhex("F4 F3 F2 F1")
+REPORT_FOOTER = bytes.fromhex("F8 F7 F6 F5")
+TARGET_BLOCK_SIZE = 5
 
 
-def _coerce_float(value: Any) -> float | None:
-    try:
-        return float(value)
-    except (TypeError, ValueError):
-        return None
+def extract_report_frames(buffer: bytes) -> tuple[list[bytes], bytes]:
+    working = bytearray(buffer)
+    frames: list[bytes] = []
 
+    while True:
+        header_index = working.find(REPORT_HEADER)
+        if header_index < 0:
+            keep = len(REPORT_HEADER) - 1
+            return frames, bytes(working[-keep:]) if working else b""
 
-def _presence_from_text(text: str) -> bool | None:
-    lowered = text.lower()
-    if any(k in lowered for k in ["no target", "empty", "idle", "absence"]):
-        return False
-    if any(k in lowered for k in ["presence", "occupied", "motion", "human", "target"]):
-        return True
-    return None
+        if header_index > 0:
+            del working[:header_index]
 
+        if len(working) < 10:
+            return frames, bytes(working)
 
-def _targets_from_json(obj: dict[str, Any]) -> list[Target]:
-    targets: list[Target] = []
-    maybe_targets = obj.get("targets") or obj.get("points") or obj.get("tracks")
-    if not isinstance(maybe_targets, list):
-        return targets
+        payload_length = int.from_bytes(working[4:6], "little")
+        frame_length = 4 + 2 + payload_length + 4
+        if len(working) < frame_length:
+            return frames, bytes(working)
 
-    for item in maybe_targets:
-        if not isinstance(item, dict):
+        footer = working[frame_length - 4 : frame_length]
+        if footer != REPORT_FOOTER:
+            del working[0]
             continue
-        x = _coerce_float(item.get("x") or item.get("x_mm"))
-        y = _coerce_float(item.get("y") or item.get("y_mm"))
-        if x is None or y is None:
-            continue
-        speed = _coerce_float(item.get("speed") or item.get("speed_mps"))
-        conf = _coerce_float(item.get("confidence") or item.get("conf"))
-        targets.append(Target(x_mm=x, y_mm=y, speed_mps=speed, confidence=conf))
-    return targets
+
+        frames.append(bytes(working[:frame_length]))
+        del working[:frame_length]
 
 
-def _targets_from_text(raw_text: str) -> list[Target]:
+def _polar_to_cartesian(distance_m: int, angle_deg: int) -> tuple[float, float]:
+    distance_mm = float(distance_m) * 1000.0
+    radians = math.radians(angle_deg)
+    x_mm = distance_mm * math.sin(radians)
+    y_mm = distance_mm * math.cos(radians)
+    return x_mm, y_mm
+
+
+def _parse_target(block: bytes) -> Target:
+    angle_raw = block[0]
+    distance_m = block[1]
+    speed_direction_raw = block[2]
+    speed_kmh = block[3]
+    snr = block[4]
+
+    angle_deg = int(angle_raw) - 0x80
+    x_mm, y_mm = _polar_to_cartesian(distance_m, angle_deg)
+
+    return Target(
+        x_mm=x_mm,
+        y_mm=y_mm,
+        speed_mps=float(speed_kmh) / 3.6,
+        angle_deg=float(angle_deg),
+        distance_m=float(distance_m),
+        speed_kmh=float(speed_kmh),
+        speed_direction_raw=int(speed_direction_raw),
+        snr=int(snr),
+        confidence=float(snr),
+    )
+
+
+def parse_report_frame(frame: bytes) -> SensorPacket:
+    if len(frame) < 10:
+        raise ValueError("Frame too short")
+    if frame[:4] != REPORT_HEADER:
+        raise ValueError("Invalid report frame header")
+    if frame[-4:] != REPORT_FOOTER:
+        raise ValueError("Invalid report frame footer")
+
+    payload_length = int.from_bytes(frame[4:6], "little")
+    payload = frame[6:-4]
+    if len(payload) != payload_length:
+        raise ValueError("Frame payload length mismatch")
+
+    target_count = 0
+    alarm = 0
     targets: list[Target] = []
 
-    for m in COORD_PATTERN.finditer(raw_text):
-        x = _coerce_float(m.group(1))
-        y = _coerce_float(m.group(2))
-        if x is not None and y is not None:
-            targets.append(Target(x_mm=x, y_mm=y))
+    if payload:
+        if len(payload) < 2:
+            raise ValueError("Report payload missing header fields")
+        target_count = payload[0]
+        alarm = payload[1]
+        target_bytes = payload[2:]
+        available_targets = len(target_bytes) // TARGET_BLOCK_SIZE
+        parsed_targets = min(target_count, available_targets)
+        for index in range(parsed_targets):
+            start = index * TARGET_BLOCK_SIZE
+            block = target_bytes[start : start + TARGET_BLOCK_SIZE]
+            targets.append(_parse_target(block))
 
-    for m in PAIR_PATTERN.finditer(raw_text):
-        x = _coerce_float(m.group(1))
-        y = _coerce_float(m.group(2))
-        if x is not None and y is not None:
-            targets.append(Target(x_mm=x, y_mm=y))
-
-    if targets:
-        return targets
-
-    for m in DIST_ANGLE_PATTERN.finditer(raw_text):
-        dist = _coerce_float(m.group(1))
-        angle = _coerce_float(m.group(2))
-        if dist is None or angle is None:
-            continue
-        radians = math.radians(angle)
-        x = dist * math.cos(radians)
-        y = dist * math.sin(radians)
-        targets.append(Target(x_mm=x, y_mm=y))
-
-    return targets
-
-
-def parse_packet(raw: bytes) -> SensorPacket:
-    raw_hex = raw.hex(" ")
-    raw_text = raw.decode("utf-8", errors="ignore").strip() or None
-
-    fields: dict[str, Any] = {}
-    targets: list[Target] = []
-    presence = False
-
-    if raw_text:
-        try:
-            parsed_json = json.loads(raw_text)
-            if isinstance(parsed_json, dict):
-                fields = parsed_json
-                targets = _targets_from_json(parsed_json)
-                explicit_presence = parsed_json.get("presence")
-                if isinstance(explicit_presence, bool):
-                    presence = explicit_presence
-                else:
-                    presence = bool(targets)
-        except json.JSONDecodeError:
-            fields = {
-                match.group(1): float(match.group(2))
-                for match in KEY_VALUE_PATTERN.finditer(raw_text)
-            }
-            targets = _targets_from_text(raw_text)
-            presence_from_text = _presence_from_text(raw_text)
-            if presence_from_text is None:
-                presence = bool(targets)
-            else:
-                presence = presence_from_text
+    fields = {
+        "frame_type": "report",
+        "payload_length": payload_length,
+        "target_count": target_count,
+        "alarm": alarm,
+        "has_approaching_target": alarm == 1,
+    }
 
     return SensorPacket(
         ts=utc_now_iso(),
-        raw_hex=raw_hex,
-        raw_text=raw_text,
-        presence=presence,
+        raw_hex=frame.hex(" "),
+        raw_text=None,
+        presence=bool(targets),
         targets=targets,
         fields=fields,
     )

@@ -9,8 +9,8 @@ from typing import Callable
 import serial
 import serial.tools.list_ports
 
-from .models import SensorStats
-from .parser import parse_packet
+from .models import SensorPacket, SensorStats, Target, utc_now_iso
+from .parser import extract_report_frames, parse_report_frame
 
 
 def list_serial_ports() -> list[str]:
@@ -104,14 +104,26 @@ class SerialReaderService:
 
             try:
                 with serial.Serial(selected_port, baud_rate, timeout=0.6) as ser:
+                    buffer = b""
                     while not self._stop_event.is_set():
-                        frame = ser.readline()
-                        if not frame:
+                        chunk = ser.read(ser.in_waiting or 64)
+                        if not chunk:
                             continue
-                        self.stats.bytes_received += len(frame)
-                        packet = parse_packet(frame)
-                        self.stats.valid_frames += 1
-                        self.on_packet(packet.to_dict())
+                        self.stats.bytes_received += len(chunk)
+                        buffer += chunk
+                        frames, buffer = extract_report_frames(buffer)
+                        for frame in frames:
+                            try:
+                                packet = parse_report_frame(frame)
+                            except ValueError:
+                                self.stats.parse_errors += 1
+                                continue
+                            self.stats.valid_frames += 1
+                            self.on_packet(packet.to_dict())
+
+                        if len(buffer) > 4096:
+                            self.stats.parse_errors += 1
+                            buffer = buffer[-64:]
             except Exception as exc:
                 self.stats.parse_errors += 1
                 self.stats.serial_disconnects += 1
@@ -121,24 +133,42 @@ class SerialReaderService:
     def _run_simulation(self) -> None:
         while not self._stop_event.is_set():
             target_count = random.choice([0, 1, 1, 2])
-            targets = []
+            targets: list[Target] = []
             for _ in range(target_count):
+                distance_m = random.uniform(0.5, 6.0)
+                angle_deg = random.uniform(-45, 45)
+                radians = angle_deg * 3.141592653589793 / 180.0
+                x_mm = distance_m * 1000.0 * __import__("math").sin(radians)
+                y_mm = distance_m * 1000.0 * __import__("math").cos(radians)
+                speed_mps = random.uniform(0.0, 1.5)
                 targets.append(
-                    {
-                        "x": random.uniform(-3000, 3000),
-                        "y": random.uniform(200, 6000),
-                        "speed": random.uniform(-1.5, 1.5),
-                    }
+                    Target(
+                        x_mm=x_mm,
+                        y_mm=y_mm,
+                        speed_mps=speed_mps,
+                        angle_deg=angle_deg,
+                        distance_m=distance_m,
+                        speed_kmh=speed_mps * 3.6,
+                        speed_direction_raw=random.choice([0, 1]),
+                        snr=random.randint(4, 20),
+                        confidence=float(random.randint(4, 20)),
+                    )
                 )
-            payload = {
-                "presence": target_count > 0,
-                "targets": targets,
-                "source": "simulation",
-            }
-            raw = (str(payload).replace("'", '"') + "\n").encode("utf-8")
-            packet = parse_packet(raw)
+            packet = SensorPacket(
+                ts=utc_now_iso(),
+                raw_hex="",
+                raw_text="simulation",
+                presence=target_count > 0,
+                targets=targets,
+                fields={
+                    "frame_type": "simulation",
+                    "target_count": target_count,
+                    "alarm": 1 if target_count > 0 else 0,
+                    "has_approaching_target": target_count > 0,
+                },
+            )
             self.stats.valid_frames += 1
-            self.stats.bytes_received += len(raw)
+            self.stats.bytes_received += max(1, target_count * 5)
             self.on_packet(packet.to_dict())
             time.sleep(0.2)
 

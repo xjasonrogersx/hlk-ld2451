@@ -15,6 +15,11 @@ class Target:
     y_mm: float
     speed_mps: float | None = None
     confidence: float | None = None
+    angle_deg: float | None = None
+    distance_m: float | None = None
+    speed_kmh: float | None = None
+    speed_direction_raw: int | None = None
+    snr: int | None = None
 
 
 @dataclass
