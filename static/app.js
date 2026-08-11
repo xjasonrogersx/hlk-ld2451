@@ -93,10 +93,15 @@ function drawTimeline() {
 function prependRawRow(packet) {
   const row = document.createElement("tr");
   const text = (packet.raw_text || packet.raw_hex || "").slice(0, 180);
+  const targets = Array.isArray(packet.targets) ? packet.targets : [];
+  const distText = targets.length
+    ? targets.map((t) => (t.distance_m != null ? t.distance_m.toFixed(1) : "?")).join(", ")
+    : "—";
   row.innerHTML = `
     <td>${new Date(packet.ts).toLocaleTimeString()}</td>
     <td>${packet.presence ? "yes" : "no"}</td>
-    <td>${packet.targets?.length || 0}</td>
+    <td>${targets.length}</td>
+    <td>${distText}</td>
     <td>${text.replaceAll("<", "&lt;")}</td>
   `;
   rawBody.prepend(row);

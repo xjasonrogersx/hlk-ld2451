@@ -21,6 +21,7 @@ The app runs a Python server that reads serial data and streams updates to a web
 python3 -m venv .venv
 source .venv/bin/activate
 pip install -r requirements.txt
+# Run from the repository root (the folder containing README.md)
 uvicorn app.main:app --reload
 ```
 
